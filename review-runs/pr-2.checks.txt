@@ -1,0 +1,4 @@
+Deterministic checks: 1 blocking, 0 minor.
+  BLOCK  R4  app/src/loans.js:58  money formatting or currency label in src/; the client formats
+         + feeText: (lateFee(l, todayIso) / 100).toFixed(2).replace(".", ",") + " грн",
+exit code: 1

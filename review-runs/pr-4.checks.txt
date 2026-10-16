@@ -1,0 +1,8 @@
+Deterministic checks: 0 blocking, 3 minor.
+  minor  R17  app/src/dates.js:6  exported function without a /** ... */ doc comment right above it
+         + export function toUtcMs(iso) {
+  minor  R17  app/src/dates.js:10  exported function without a /** ... */ doc comment right above it
+         + export function daysBetween(fromIso, toIso) {
+  minor  R17  app/src/dates.js:14  exported function without a /** ... */ doc comment right above it
+         + export function addDays(iso, days) {
+exit code: 0
