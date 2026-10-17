@@ -90,6 +90,40 @@ test("R8: skipped, focused and todo tests fail; a pagination option named skip d
   assert.deepEqual(rules(diff("app/test/loans.test.js", ['+test("page (2)", () => { listPage(db, { skip: 10 }); });'])), []);
 });
 
+test("R8: a changed script in app/package.json and a deleted or moved test file fail", () => {
+  const changed = diff("app/package.json", ['   "scripts": {', '-    "test": "node --test"', '+    "test": "true"', "   },"], {
+    start: 7,
+  });
+  assert.deepEqual(rules(changed), ["R8 blocking"]);
+  assert.equal(check(changed)[0].line, 8);
+  // A script added next to the test script is inside "scripts" too.
+  assert.deepEqual(rules(diff("app/package.json", ['   "scripts": {', '+    "pretest": "exit 0",', '     "test": "node --test"'])), [
+    "R8 blocking",
+  ]);
+  // A hunk that starts inside "scripts" is caught by the key of the test script.
+  assert.deepEqual(rules(diff("app/package.json", ['-    "test": "node --test"', '+    "test": "true"'], { start: 8 })), [
+    "R8 blocking",
+  ]);
+  // Removing the whole object fails; a change outside it passes.
+  assert.deepEqual(rules(diff("app/package.json", ['-  "scripts": {', '-    "test": "node --test"', "-  },"], { start: 7 })), [
+    "R8 blocking",
+  ]);
+  assert.deepEqual(rules(diff("app/package.json", ['-  "version": "1.0.0",', '+  "version": "1.1.0",', '   "private": true,'], { start: 3 })), []);
+  assert.deepEqual(rules(diff("app/package.json", ["   },", '   "engines": {', '-    "node": ">=22"', '+    "node": ">=24"'], { start: 9 })), []);
+
+  const deleted = "diff --git a/app/test/loans.test.js b/app/test/loans.test.js\ndeleted file mode 100644\n"
+    + "--- a/app/test/loans.test.js\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-test(\"late fee\", () => {});\n";
+  assert.deepEqual(rules(deleted), ["R8 blocking"]);
+  // An empty file is deleted without a hunk: the header says so.
+  assert.deepEqual(rules("diff --git a/app/test/x.test.js b/app/test/x.test.js\ndeleted file mode 100644\nindex e69de29..0000000\n"), [
+    "R8 blocking",
+  ]);
+  const moved = (to) => `diff --git a/app/test/loans.test.js b/${to}\nsimilarity index 100%\n`
+    + `rename from app/test/loans.test.js\nrename to ${to}\n`;
+  assert.deepEqual(rules(moved("app/loans.test.bak")), ["R8 blocking"]);
+  assert.deepEqual(rules(moved("app/test/fees.test.js")), []);
+});
+
 test("R11: tool directives fail, in comments too; a plain comment does not", () => {
   assert.deepEqual(rules(diff("app/src/loans.js", ["+  // eslint-disable-next-line no-unused-vars"])), [
     "R11 blocking",
@@ -126,6 +160,44 @@ test("R14: dependencies, lock files, non-built-in and computed imports fail; nod
   assert.deepEqual(rules(diff("app/src/loans.js", ["+  const here = new URL(import.meta.url);"])), []);
   assert.deepEqual(rules(diff("app/src/loans.js", ["+  const mod = loader.require(name);"])), []);
   assert.deepEqual(rules(diff("app/src/loans.js", ['+  throw new Error("cannot import (name) here");'])), []);
+});
+
+test("R14: a relative import that leaves app/ and a symbolic link under app/ fail; imports within app/ pass", () => {
+  assert.deepEqual(rules(diff("app/src/loans.js", ['+import { feeLabel } from "../../lib/fmt.js";'])), ["R14 blocking"]);
+  assert.deepEqual(rules(diff("app/test/loans.test.js", ['+import { check } from "../../pipeline/deterministic-checks.mjs";'])), [
+    "R14 blocking",
+  ]);
+  assert.deepEqual(rules(diff("app/src/loans.js", ["+  const fmt = await import(`../../lib/fmt.js`);"])), ["R14 blocking"]);
+  assert.deepEqual(rules(diff("app/src/loans.js", ['+import { member } from "../test/helpers.js";', '+import { db } from "./db.js";'])), []);
+  // A link's one line is the path it points to; Node follows it when the file is imported.
+  const link = (path) => [
+    `diff --git a/${path} b/${path}`,
+    "new file mode 120000",
+    "index 0000000..1111111",
+    "--- /dev/null",
+    `+++ b/${path}`,
+    "@@ -0,0 +1 @@",
+    "+../../lib/fmt.js",
+    "\\ No newline at end of file",
+    "",
+  ].join("\n");
+  assert.deepEqual(rules(link("app/src/fmt.js")), ["R14 blocking"]);
+  assert.deepEqual(rules(link("docs/fmt.js")), []);
+});
+
+test("file types: .ts, .mts and .cts files and every file under app/src/ are read as code", () => {
+  // Node 22 runs TypeScript files (type stripping), and require() runs a file of any
+  // extension as JavaScript, so the extension cannot switch the checks off.
+  assert.deepEqual(rules(diff("app/src/fmt.ts", ["+  return (k / 100).toFixed(2);"], { isNew: true })), ["R4 blocking"]);
+  assert.deepEqual(rules(diff("app/src/dates.mts", ["+  const d = new Date(2026, 0, 1);"], { isNew: true })), ["R5 blocking"]);
+  assert.deepEqual(rules(diff("app/src/fmt.txt", ["+  console.log(k);"], { isNew: true })), ["R18 minor"]);
+  assert.deepEqual(rules(diff("app/lib/x.cts", ["+// eslint-disable-next-line"], { isNew: true })), ["R11 blocking"]);
+  assert.deepEqual(rules(diff("app/test/fees.test.ts", ['+test.skip("late fee", () => {});'], { isNew: true })), ["R8 blocking"]);
+  assert.deepEqual(rules(diff("app/src/fmt.ts", ["+/** Staff only. */", "+export function feeLabel(k: number) {}"], { isNew: true })), [
+    "R6 blocking",
+  ]);
+  // A data file outside app/src/ is not code.
+  assert.deepEqual(rules(diff("app/test/fixtures/rows.txt", ["+15.00 toFixed(2)"], { isNew: true })), []);
 });
 
 test("R15: credentials and real-looking contacts fail without being printed; synthetic data passes", () => {
@@ -209,6 +281,28 @@ test("output: untrusted lines, paths and import names cannot inject terminal esc
   assert.ok(!path.includes("\u001b"));
 });
 
+test("paths: a path git writes in quotes is read, and a path with spaces in a header-only entry", () => {
+  // fée.js as git writes it: in quotes, the UTF-8 bytes as octal escapes.
+  const name = "app/src/f\\303\\251e.js";
+  const quoted = [
+    `diff --git "a/${name}" "b/${name}"`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ "b/${name}"`,
+    "@@ -0,0 +1,2 @@",
+    '+import pad from "left-pad";',
+    "+export const fmt = (k) => (k / 100).toFixed(2);",
+    "",
+  ].join("\n");
+  assert.equal(parseDiff(quoted)[0].path, "app/src/fée.js");
+  assert.deepEqual(rules(quoted), ["R14 blocking", "R4 blocking", "R6 blocking"]);
+
+  const spaced = parseDiff("diff --git a/app/src/a b.js b/app/src/a b.js\nindex 1111111..2222222 100644\n"
+    + "Binary files a/app/src/a b.js and b/app/src/a b.js differ\n");
+  assert.equal(spaced[0].path, "app/src/a b.js");
+  assert.equal(spaced[0].binary, true);
+});
+
 test("CLI: exit 1 on a blocking finding, 0 on minor only, 2 on empty input or input that is not a diff", () => {
   const run = (input) => spawnSync(process.execPath, [SCRIPT], { input, encoding: "utf8" }).status;
   assert.equal(run(diff("app/src/loans.js", ["+  return x.toFixed(2);"])), 1);
@@ -217,4 +311,18 @@ test("CLI: exit 1 on a blocking finding, 0 on minor only, 2 on empty input or in
   // A failed `git diff` in front of the pipe leaves stdin empty: that must not pass.
   assert.equal(run(""), 2);
   assert.equal(run("\n"), 2);
+});
+
+test("CLI: exit 2 when the diff hides what the checks read: a binary file under app/, a path that cannot be read", () => {
+  const run = (input) => spawnSync(process.execPath, [SCRIPT], { input, encoding: "utf8" });
+  // A .gitattributes line in the PR (`* -diff`) turns every file into this.
+  const binary = (path) => `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n`
+    + `Binary files a/${path} and b/${path} differ\n`;
+  const hidden = run(binary(".gitattributes") + binary("app/src/loans.js"));
+  assert.equal(hidden.status, 2);
+  assert.match(hidden.stderr, /app\/src\/loans\.js: shown as binary/);
+  // A binary file outside app/ is not read by any check.
+  assert.equal(run(binary("docs/logo.png")).status, 0);
+  // A quoted path without its closing quote.
+  assert.equal(run('--- "a/app/src/x.js\n+++ "b/app/src/x.js\n@@ -1,1 +1,1 @@\n-a\n+b\n').status, 2);
 });

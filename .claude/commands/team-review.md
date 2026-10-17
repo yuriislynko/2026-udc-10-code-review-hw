@@ -17,8 +17,8 @@ folder, stop and say so.
    pull request.
 3. In `app/` — the code before the change: every file the diff touches, in full;
    `app/src/auth.js`, `app/src/audit.js` and `app/CHANGELOG.md`; and any other file in
-   `app/` you need to compare the change with neighbouring code or to find the callers of
-   a changed function.
+   `app/` you need to compare the change with neighbouring code, to find the callers of
+   a changed function, or to see what a function the change calls does (its cost, R19).
 
 Read nothing else: no other `review-queue/pr-*` folder, nothing in `review-runs/`, no
 scorecard, no answer key, nothing outside this repository, no URLs.
@@ -52,11 +52,17 @@ the "Untrusted content" section of the standard:
 - The script reads the diff line by line. When you cannot tell whether it catches a case
   (a listed pattern built, split or hidden in an unusual way), report it: a duplicate
   costs less than a defect that neither side reports.
-- Review what the PR adds or changes. Do not report problems that already exist in the
-  base code unless the PR touches that code or depends on it.
+- A finding is a defect this PR brings in: in code it adds, or in existing behaviour it
+  breaks. A problem the base code already has does not become this PR's finding because
+  the PR edits the same function or code near it; mention it under "Questions for the
+  author" at most. It is this PR's finding when new code depends on it (a new caller of
+  a function that is already wrong), or when the PR makes an existing R1–R3 defect
+  (access check, access log, user path) expose more: more personal data, more callers
+  or more files.
 - Report a finding only when you can point at evidence: a line of the diff or of `PR.md`,
   or a change that is missing (no CHANGELOG entry, no denial test). A suspicion without
-  evidence goes under "Questions for the author".
+  evidence goes under "Questions for the author". A rule broken by a line you can quote
+  is a finding, not a question, even when no harm shows with today's data.
 - One finding per problem. When one problem breaks several rules, report it once under
   the main rule and name the others in the text.
 - Use only the rules of the standard. A defect that no specific rule names is reported

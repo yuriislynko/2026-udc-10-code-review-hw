@@ -2,22 +2,29 @@
 // Deterministic checks from docs/review-standard.md, run over a unified diff.
 //
 //   node pipeline/deterministic-checks.mjs review-queue/pr-3/change.diff
-//   git diff origin/main...HEAD | node pipeline/deterministic-checks.mjs
+//   git diff --text origin/main...HEAD | node pipeline/deterministic-checks.mjs
 //
-// Only lines the diff adds (and, for R6, removes) are checked, so code already in
-// app/ never fails a pull request. Comments are stripped before the code patterns
+// Only lines the diff adds (and, for R6 and R8, removes) are checked, so code already
+// in app/ never fails a pull request. Comments are stripped before the code patterns
 // run (a block comment or a template literal is followed across the lines of a
 // hunk); tool directives, secrets and personal data are searched in comments too.
 // Exit code: 0 = no blocking finding, 1 = a blocking rule failed, 2 = empty or bad
 // input, so a `git diff` that fails upstream of the pipe cannot pass as a clean diff.
+// Input the checks cannot read exits 2 as well: a file path that cannot be parsed, or
+// a file under app/ shown as binary (a .gitattributes line can make `git diff` print
+// "Binary files ... differ" in place of the lines; --text prevents it).
+// Code is read wherever Node can run it: .ts, .mts and .cts files too (Node 22 strips
+// the types), and every file under app/src/ whatever its extension (require() runs a
+// file of any extension as JavaScript). Code in app/ may load only files in app/.
 // Findings under minor rules are printed and never fail the run.
 
 import { readFileSync } from "node:fs";
+import { posix } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const SRC = /^app\/src\/.+\.[cm]?js$/;
-const TEST = /^app\/test\/.+\.[cm]?js$/;
-const APP_CODE = /^app\/.+\.[cm]?js$/;
+const SRC = /^app\/src\/./;
+const TEST = /^app\/test\/.+\.[cm]?[jt]s$/;
+const APP_CODE = /^app\/(?:src\/.+|.+\.[cm]?[jt]s)$/;
 const APP = /^app\//;
 const CHANGELOG = "app/CHANGELOG.md";
 
@@ -48,6 +55,12 @@ const SKIPPED_TEST = [
   /\b(?:test|it|describe|suite)\s*\([^)]*\{[^}]*\b(?:skip|only|todo)\s*:/,
   /\bt\.(?:skip|todo)\s*\(/,
 ];
+// R8: `npm test` runs the "test" script of app/package.json, so a changed script can
+// keep the tests from running. Each side of the diff is read in order to tell which
+// lines sit inside "scripts"; a hunk that starts inside the object is caught by the
+// key of the test scripts.
+const SCRIPTS_KEY = /^\s*"scripts"\s*:/;
+const TEST_SCRIPT_KEY = /^\s*"(?:pre|post)?test"\s*:/;
 
 // R14: npm dependencies.
 const DEPENDENCY_KEY =
@@ -96,15 +109,62 @@ function newFile(files) {
   return file;
 }
 
-function cleanPath(header) {
-  const path = header.split("\t")[0].trim();
+// Git writes a path with unusual characters (non-ASCII, a quote, a backslash, a control
+// character) in C style: "b/app/src/f\303\251e.js", the octal escapes being UTF-8 bytes.
+const C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/** The path inside a C-style quoted string, the text itself when it is not quoted, null when it cannot be read. */
+function unquote(text) {
+  if (!text.startsWith('"')) return text;
+  const bytes = [];
+  for (let i = 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') return i === text.length - 1 ? Buffer.from(bytes).toString("utf8") : null;
+    if (c !== "\\") {
+      bytes.push(...Buffer.from(c, "utf8"));
+      continue;
+    }
+    const octal = /^[0-3][0-7]{2}/.exec(text.slice(i + 1));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      i += 3;
+    } else if (C_ESCAPES[text[i + 1]] !== undefined) {
+      bytes.push(C_ESCAPES[text[++i]]);
+    } else {
+      return null;
+    }
+  }
+  return null; // no closing quote
+}
+
+/** The path in a ---/+++ line or a header field: null for /dev/null, undefined when it cannot be read. */
+function cleanPath(field) {
+  const path = unquote(field.split("\t")[0].trim());
+  if (path === null) return undefined;
   return path === "/dev/null" ? null : path.replace(/^[ab]\//, "");
+}
+
+/**
+ * The two paths of a `diff --git` line. Each is quoted or has no spaces; a path with
+ * spaces is not quoted, and git then writes the same path twice (a rename has its own
+ * "rename from" and "rename to" lines).
+ */
+function headerPaths(rest) {
+  const pair = /^("(?:\\.|[^"\\])*"|\S+) ("(?:\\.|[^"\\])*"|\S+)$/.exec(rest);
+  if (pair) return [cleanPath(pair[1]), cleanPath(pair[2])];
+  const half = (rest.length - 1) / 2;
+  if (Number.isInteger(half) && rest[half] === " " && rest.slice(2, half) === rest.slice(half + 3)) {
+    return [cleanPath(rest.slice(0, half)), cleanPath(rest.slice(half + 1))];
+  }
+  return [undefined, undefined];
 }
 
 /**
  * Parses a unified diff into files. Each added line keeps its new-side line number
  * and the new-side line right above it: null at the top of a file, undefined when
- * the diff does not show it. Context lines are kept with their new-side numbers.
+ * the diff does not show it. Context lines are kept with their new-side numbers and,
+ * as `old`, their old-side numbers. A file whose path cannot be read is marked
+ * `unreadable`; one shown as binary, `binary`.
  */
 export function parseDiff(text) {
   const files = [];
@@ -129,7 +189,7 @@ export function parseDiff(text) {
         oldNo++;
         oldLeft--;
       } else if (mark === " " || raw === "") {
-        file.context.push({ line: newNo, text: body });
+        file.context.push({ line: newNo, old: oldNo, text: body });
         above = body;
         oldNo++;
         newNo++;
@@ -139,19 +199,41 @@ export function parseDiff(text) {
       continue; // "\ No newline at end of file" is not a line
     }
 
-    const git = /^diff --git a\/(\S+) b\/(\S+)$/.exec(raw);
     if (raw.startsWith("diff --git ")) {
       file = newFile(files);
-      if (git) [, file.oldPath, file.path] = git;
+      [file.oldPath, file.path] = headerPaths(raw.slice("diff --git ".length));
       continue;
     }
     if (raw.startsWith("--- ")) {
       if (!file || file.hunks > 0) file = newFile(files);
       file.oldPath = cleanPath(raw.slice(4));
+      if (file.oldPath === undefined) file.unreadable = true;
       continue;
     }
     if (raw.startsWith("+++ ") && file) {
       file.path = cleanPath(raw.slice(4));
+      if (file.path === undefined) file.unreadable = true;
+      continue;
+    }
+    const renamed = /^rename (from|to) (.+)$/.exec(raw);
+    if (renamed && file) {
+      const path = unquote(renamed[2]);
+      if (path === null) file.unreadable = true;
+      file[renamed[1] === "from" ? "oldPath" : "path"] = path ?? undefined;
+      file.renamed = true;
+      continue;
+    }
+    if (raw.startsWith("deleted file mode ") && file) {
+      file.deleted = true;
+      continue;
+    }
+    // Mode 120000 is a symbolic link: its one "line" is the path it points to.
+    if (/^new (?:file )?mode 120000$/.test(raw) && file) {
+      file.symlink = true;
+      continue;
+    }
+    if ((/^Binary files .* differ$/.test(raw) || raw === "GIT binary patch") && file) {
+      file.binary = true;
       continue;
     }
     const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
@@ -283,6 +365,60 @@ function localDateConstructor(code, limit = code.length) {
   return false;
 }
 
+/** The number of `{` minus the number of `}` in a line of JSON, outside strings. */
+function braces(text) {
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === "{") depth++;
+    else if (c === "}") depth--;
+  }
+  return depth;
+}
+
+/**
+ * The lines of `changed` that sit inside the "scripts" object of a package.json. One
+ * side of the diff is read: its changed lines with its context lines, in line order.
+ */
+function insideScripts(changed, context) {
+  const lines = [
+    ...context.map((l) => ({ ...l, changed: false })),
+    ...changed.map((l) => ({ ...l, changed: true })),
+  ].sort((a, b) => a.line - b.line);
+  const found = [];
+  let depth = 0;
+  let scripts = null; // the depth the "scripts" object opened at
+  let previous = null;
+  for (const line of lines) {
+    if (previous === null || line.line !== previous + 1) [depth, scripts] = [0, null]; // a new hunk
+    previous = line.line;
+    const opens = SCRIPTS_KEY.test(line.text);
+    if (line.changed && (scripts !== null || opens || TEST_SCRIPT_KEY.test(line.text))) found.push(line);
+    if (opens) scripts = depth;
+    depth += braces(line.text);
+    if (scripts !== null && depth <= scripts) scripts = null;
+  }
+  return found;
+}
+
+/**
+ * Files the checks cannot read: a path that cannot be parsed, or a file under app/
+ * shown as binary, so its lines are not in the diff.
+ */
+export function unreadable(files) {
+  return files.flatMap((f) => {
+    const name = f.path ?? f.oldPath;
+    if (f.unreadable || !name) return ["a file in the diff has a path that cannot be read"];
+    if (f.binary && APP.test(name)) return [`${shown(name)}: shown as binary, its lines cannot be checked (run git diff with --text)`];
+    return [];
+  });
+}
+
 function personalData(text) {
   const found = [];
   for (const m of text.matchAll(EMAIL)) if (!SYNTHETIC_DOMAIN.test(m[1])) found.push("an email");
@@ -313,6 +449,14 @@ export function check(diffText) {
 
     if (LOCK_OR_MODULES.test(name) && f.added.length > 0) {
       add("R14", "blocking", name, f.added[0].line, "lock file or node_modules added under app/");
+    }
+
+    if (TEST.test(f.oldPath ?? "") && (f.deleted || f.path === null || (f.renamed && !TEST.test(f.path ?? "")))) {
+      add("R8", "blocking", f.oldPath, 1, "test file deleted or moved out of app/test/");
+    }
+
+    if (f.symlink && APP.test(f.path ?? "")) {
+      add("R14", "blocking", f.path, 1, "symbolic link under app/; a link can load code from outside app/");
     }
 
     const codes = APP_CODE.test(name) ? hunkCode(f) : null;
@@ -347,6 +491,8 @@ export function check(diffText) {
         for (const spec of importsOf(code)) {
           if (!/^(?:node:|\.\.?\/)/.test(spec)) {
             add("R14", "blocking", name, line, `import of "${spec}"; only node: built-ins and local files`, text);
+          } else if (spec.startsWith(".") && !APP.test(posix.join(posix.dirname(name), spec))) {
+            add("R14", "blocking", name, line, `import of "${spec}" leaves app/; only files in app/`, text);
           }
         }
         if (COMPUTED_IMPORT.test(blankStrings(code))) {
@@ -365,6 +511,26 @@ export function check(diffText) {
         for (const kind of personalData(text)) {
           add("R15", "blocking", name, line, `${kind} outside the synthetic ranges (line not shown)`);
         }
+      }
+    }
+
+    if (name === "app/package.json") {
+      const scripts = [
+        ...insideScripts(f.added, f.context).map((a) => ({ ...a, where: a.line })),
+        ...insideScripts(f.removed, f.context.map((c) => ({ line: c.old, text: c.text }))).map((r) => ({
+          ...r,
+          where: `${r.line} (removed)`,
+        })),
+      ];
+      if (scripts.length > 0) {
+        add(
+          "R8",
+          "blocking",
+          name,
+          scripts[0].where,
+          `${scripts.length} line(s) of "scripts" changed; npm test must keep running every test`,
+          scripts[0].text,
+        );
       }
     }
 
@@ -439,8 +605,14 @@ async function main(args) {
     console.error("empty input: expected a unified diff");
     return 2;
   }
-  if (parseDiff(text).length === 0) {
+  const files = parseDiff(text);
+  if (files.length === 0) {
     console.error("input is not a unified diff");
+    return 2;
+  }
+  const unread = unreadable(files);
+  if (unread.length > 0) {
+    console.error(["input the checks cannot read:", ...unread.map((m) => `  - ${m}`)].join("\n"));
     return 2;
   }
   const findings = check(text);

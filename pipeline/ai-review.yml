@@ -1,0 +1,238 @@
+# AI review for pull requests. Deterministic checks run first; the AI reviewer
+# (.claude/commands/team-review.md) runs only when they pass and posts an advisory
+# comment. A human approves the merge. Threat model: docs/pipeline.md.
+#
+# Kept in pipeline/ so it does not run in the course repository. To use it: merge
+# pipeline/, .claude/commands/team-review.md and docs/review-standard.md into the default
+# branch first (the jobs run the base branch's copies only, so on a PR that brings them
+# along `patterns` fails); then copy this file to .github/workflows/ai-review.yml, add
+# the ANTHROPIC_API_KEY repository secret, and make the checks of the `tests` and
+# `patterns` jobs required in branch protection. GitHub lists a check under the job's
+# name: "Tests (R13)" and "Pattern checks (deterministic-checks.mjs)".
+#
+# Third-party code is pinned: actions by full commit SHA (a tag can be moved to other
+# code), Claude Code and the yaml parser by exact version. The `patterns` job runs
+# pipeline/check-workflow-policy.mjs on this file; to run it locally, see its header.
+
+name: ai-review
+
+on:
+  # pull_request, not pull_request_target: a PR from a fork gets no secrets and a
+  # read-only GITHUB_TOKEN, and the workflow runs in the context of the PR's merge
+  # commit, not of the base repository.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# No rights by default; each job asks for what it needs.
+permissions: {}
+
+# A new push cancels the run for the previous commit of the same PR.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash # bash -eo pipefail: a failing command fails the step
+
+jobs:
+  tests:
+    name: Tests (R13)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      # These steps run the PR's own code. The job has no secrets, and the read-only
+      # token is not left in .git/config, so that code finds nothing to take.
+      # `node --test` is what `npm test` runs. It is called directly: `npm test` would run
+      # the "test" script of the PR's own package.json, which the PR can change.
+      - name: App tests
+        working-directory: app
+        run: node --test
+      - name: Pipeline script tests
+        run: node --test pipeline/deterministic-checks.test.mjs pipeline/check-review-format.test.mjs pipeline/check-workflow-policy.test.mjs
+
+  patterns:
+    name: Pattern checks (deterministic-checks.mjs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The script comes from the base branch, so a PR cannot weaken its own check.
+      - name: Check out the base branch (trusted script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      # The merge commit GitHub builds for the PR; its first parent is the base branch,
+      # so HEAD^1..HEAD is exactly what the PR changes.
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      # The PR's files are only read here, never run. --text keeps every file a text
+      # diff even when the PR's .gitattributes marks it as binary (`* -diff`), which
+      # would leave its lines out; --no-ext-diff and --no-textconv keep diff drivers out.
+      # An empty or failed diff exits 2, and so does a file the script cannot read.
+      - name: Check the diff
+        run: |
+          git -C pr diff --text --no-ext-diff --no-textconv HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+          node base/pipeline/deterministic-checks.mjs "$RUNNER_TEMP/pr.diff"
+      # The base branch's policy check on the PR's copies of this workflow: a change that
+      # adds a write permission, a secret, pull_request_target or an unpinned action fails
+      # here. It catches a mistake, not a hostile author: on pull_request the PR's own
+      # version of the workflow runs, so a PR can remove this step along with the rest.
+      # The parser is pinned (yaml 2.9.1, no dependencies) and runs from the workspace
+      # root, outside the PR's checkout, so no .npmrc or node_modules of the PR is used.
+      # It needs the npm registry: when the download fails (npm retries twice), this
+      # required check fails and the merge waits for a rerun; it never passes unchecked.
+      - name: Check the workflow policy
+        run: |
+          found=0
+          for f in pr/.github/workflows/ai-review.yml pr/pipeline/ai-review.yml; do
+            [ -f "$f" ] || continue
+            found=1
+            echo "$f"
+            npx --yes yaml@2.9.1 --json --single < "$f" | node base/pipeline/check-workflow-policy.mjs
+          done
+          [ "$found" = 1 ]
+
+  ai-review:
+    name: AI review (advisory)
+    # Runs only when every deterministic check passed: a PR that is blocked anyway does
+    # not pay for a review.
+    needs: [tests, patterns]
+    # Same-repository PRs only: a fork PR gets no secrets, so a human reviews it without
+    # the AI. Drafts wait until they are marked ready for review.
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # The reviewer command, the standard, the format check and the code under review
+      # come from the base branch. Nothing from the PR runs in this job, and no .claude/
+      # settings, hooks or commands from the PR are loaded.
+      - name: Check out the base branch (trusted reviewer)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      # The same layout as a queued PR (review-queue/pr-N/), so the reviewer runs as it
+      # was measured in docs/review-scorecard.md. The PR's files are removed once the diff
+      # is taken. Earlier runs, the scorecard and the queued PRs are removed too: the
+      # reviewer sees this PR, the base code and the standard. The diff is taken as in
+      # `patterns`, so the PR's .gitattributes cannot hide its lines from the reviewer.
+      # The title and body are untrusted: they reach the shell only through env, never
+      # through ${{ }} in a script.
+      - name: Prepare the review input
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git -C pr diff --text --no-ext-diff --no-textconv HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+          rm -rf pr base/review-queue base/review-runs base/docs/review-scorecard.md
+          dir="base/review-queue/pr-$PR_NUMBER"
+          mkdir -p "$dir"
+          mv "$RUNNER_TEMP/pr.diff" "$dir/change.diff"
+          printf '# PR-%s: %s\n\n%s\n' "$PR_NUMBER" "$PR_TITLE" "$PR_BODY" > "$dir/PR.md"
+      # The version the reviewer was measured with (docs/review-scorecard.md). It was two
+      # days old when pinned; see docs/pipeline.md for why the two-week rule of the
+      # actions is not applied to it.
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code@2.1.301
+      # The API key exists in this step only. The session has three read-only tools: no
+      # shell, no file writes, no web access, no MCP servers. Read can reach files outside
+      # the checkout, so it is denied where a runner keeps anything worth taking: /proc
+      # holds the environment of every process, the key included; $RUNNER_TEMP and the
+      # runner's own directory (~/runners or ~/actions-runner, depending on the runner);
+      # and the credential files of the home directory, the list of the local runs
+      # (docs/review-standard.md). The home directory as a whole cannot be denied:
+      # the checkout is inside it. --restricted would confine Read to the checkout, but in
+      # 2.1.301 it does not load the project's /team-review command. The budget caps one
+      # run at about four times the most expensive measured review ($0.26).
+      - name: Run the reviewer
+        working-directory: base
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/review"
+          deny=("Read(//proc/**)" "Read(//sys/**)" "Read(/$RUNNER_TEMP/**)" "Read(~/runners/**)" "Read(~/actions-runner/**)"
+                "Read(~/.ssh/**)" "Read(~/.aws/**)" "Read(~/.gnupg/**)" "Read(~/.config/**)" "Read(~/.claude/**)"
+                "Read(~/.docker/**)" "Read(~/.kube/**)" "Read(~/.git-credentials)" "Read(~/.netrc)" "Read(~/.npmrc)"
+                "Read(~/.zsh_history)" "Read(~/.bash_history)" "Read(~/**/.env)" "Read(~/**/.env.*)")
+          claude -p "/team-review $PR_NUMBER" --model claude-opus-5-5 \
+            --tools "Read,Grep,Glob" \
+            --disallowedTools "${deny[@]}" \
+            --strict-mcp-config --setting-sources project \
+            --max-budget-usd 1 --no-session-persistence \
+            > "$RUNNER_TEMP/review/pr-$PR_NUMBER.md"
+      # Format and credential check. On failure nothing is uploaded or posted, and the
+      # log names the problem without quoting the review.
+      - name: Check the review
+        working-directory: base
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node pipeline/check-review-format.mjs "$RUNNER_TEMP/review/pr-$PR_NUMBER.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-review
+          path: ${{ runner.temp }}/review/
+          if-no-files-found: error
+          retention-days: 7
+
+  comment:
+    name: Post the AI review
+    needs: ai-review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The only job that can write to the PR. It has no API key, checks out nothing and
+    # runs nothing from the PR or the model: it posts a text file as a comment. A
+    # comment, not a review: it never approves and never requests changes.
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-review
+          path: review
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            printf '> **Advisory AI review** of %s. It does not block the merge; a human reviewer approves it. The text below is model output shaped by the content of this PR.\n\n' "$HEAD_SHA"
+            # "@name" gets a zero-width space after the "@", so text in the PR cannot
+            # make the bot mention people or teams.
+            perl -CSD -pe 's/@(?=\w)/\@\x{200B}/g' "review/pr-$PR_NUMBER.md"
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
