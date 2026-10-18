@@ -204,7 +204,10 @@ and the command's rule on base-code problems) still described cases from the que
 the command had no R1–R3 exception and R19 no base-code sentence. The examples were
 rewritten so that none of them describes a case from the queue, and the run below was
 made with the configuration now in the repository. The earlier run gave the same counts;
-it is not used, so that every number here belongs to the configuration under review.
+it is not used, so that every number here belongs to the configuration under review. One
+of its six first attempts (PR-4) failed the format check, a review in a ` ```text ` block,
+and was rerun in a new session; that failure is counted in the format-failure rate in
+[`docs/task-e-bonus.md`](task-e-bonus.md#output-format).
 
 ### How the run was made
 
@@ -219,12 +222,15 @@ it is not used, so that every number here belongs to the configuration under rev
   session; no run was repeated.
 - **Configuration check:** the `docs/review-standard.md` text each session read and the
   command text it was given are identical to the files in the repository (compared from
-  the session transcripts). The standard was edited after Run 2, for Task D, only where
-  it describes the deterministic checks: the CI command and the file types the script
-  reads (Deterministic checks), the Deterministic column of R13 and R14, and the R14 rule
-  text, where "local files" became "local files in `app/`" to match the script. The
-  script's output on the six queued PRs did not change (compared with
-  `review-runs/pr-N.checks.txt`), so the numbers below stand.
+  the session transcripts). The standard was edited after Run 2 in two places. For
+  Task D, where it describes the deterministic checks: the CI command and the file types
+  the script reads (Deterministic checks), the Deterministic column of R13 and R14, and
+  the R14 rule text, where "local files" became "local files in `app/`" to match the
+  script. After Task E, in the run procedure under
+  [Where it is encoded in the reviewer](review-standard.md#where-it-is-encoded-in-the-reviewer):
+  the CI pipeline reruns a review that fails the format once, and a credential in the
+  output is exit code 3. The script's output on the six queued PRs did not change
+  (compared with `review-runs/pr-N.checks.txt`), so the numbers below stand.
 - **Isolation check:** the session transcripts show that every run read only
   `docs/review-standard.md`, its own `review-queue/pr-N/` folder and files in `app/`. No
   tool call failed and no permission denial was logged. The answer key sat next to the

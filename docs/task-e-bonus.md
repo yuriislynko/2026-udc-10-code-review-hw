@@ -17,7 +17,11 @@ and with the answer key. Paths 1 and 3 were not done.
   column of R13 and R14) and in the R14 rule text, where "local files" became "local files
   in `app/`". Nothing else in the standard changed (compared from the session transcripts;
   see the configuration check under Run 2 in [`docs/review-scorecard.md`](review-scorecard.md)).
-  All 18 sessions of this task read the same text.
+  All 18 sessions of this task read the same text. One later edit (commit `cc300a4`)
+  changed only the run procedure under
+  [Where it is encoded in the reviewer](review-standard.md#where-it-is-encoded-in-the-reviewer):
+  the CI pipeline reruns a review that fails the format once, and a credential in the
+  output is exit code 3. No session of this task read that text.
 - **Sessions:** all six PRs, three sessions per PR: 18 new sessions, each started with the
   command from
   [Where it is encoded in the reviewer](review-standard.md#where-it-is-encoded-in-the-reviewer)
@@ -149,15 +153,16 @@ critical/high row has none and the [standard] row has both.
 need (standard, PR, diff, …).»). All five reruns passed. The failed outputs found the same
 key defects as the reruns that replaced them. The failed PR-4 output was APPROVE WITH
 COMMENTS where its rerun approved, and the failed PR-1 output of session 3 holds the
-second R9 comment above. With Run 1 (1 of 6) and Run 2 (0 of 6), 6 of 30 first
-attempts failed: 20%.
+second R9 comment above. With Run 1 (1 of 6), the earlier Run 2 that the scorecard sets
+aside (1 of 6: PR-4, a review in a ` ```text ` block, rerun in a new session) and Run 2
+(0 of 6), 7 of 36 first attempts failed: 19%.
 
 This matters for the pipeline more than for the counts. With one attempt per PR, about
 one PR in five would get no AI comment and a red `ai-review` job. After this measurement,
 [`pipeline/ai-review.yml`](../pipeline/ai-review.yml) reruns a review that fails the
 format check once, in a new session, as the local runs do; a review with a line that
 looks like a credential is not rerun. If the two attempts fail independently at the
-measured rate, about one PR in twenty-five (0.2 × 0.2 = 4%) gets no comment; that figure
+measured rate, about one PR in twenty-eight (0.19 × 0.19 ≈ 3.6%) gets no comment; that figure
 is an estimate, not a measurement. A rerun costs one more review, about $0.22. The merge
 decision does not change, because the AI jobs are not required checks.
 

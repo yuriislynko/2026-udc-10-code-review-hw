@@ -177,8 +177,8 @@ jobs:
       # 2.1.301 it does not load the project's /team-review command. The budget caps one
       # run at about four times the most expensive measured review ($0.26).
       # A review that breaks the format (exit 1 of check-review-format.mjs) is rerun once,
-      # in a new session, as the local runs are: Task E measured a format failure in 6 of
-      # 30 first attempts (docs/task-e-bonus.md). A review with a line that looks like a
+      # in a new session, as the local runs are: Task E measured a format failure in 7 of
+      # 36 first attempts (docs/task-e-bonus.md). A review with a line that looks like a
       # credential (exit 3) is never rerun: the step fails and nothing is uploaded or
       # posted. At most two runs per push, so at most $2. The next step checks the review
       # that is kept, without the key.
