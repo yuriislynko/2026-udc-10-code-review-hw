@@ -54,7 +54,15 @@ test("trigger and permissions: pull_request_target, missing or broad permissions
   const broad = safe();
   delete broad.permissions;
   broad.jobs["ai-review"].permissions = "write-all";
-  assert.deepEqual(failing(broad), ["top-level permissions is empty", "no job has both a secret and a write permission"]);
+  assert.deepEqual(failing(broad), [
+    "top-level permissions is empty",
+    "no job has both a secret and a write permission",
+    "only comment may write",
+  ]);
+
+  const writeNoSecret = safe();
+  writeNoSecret.jobs.tests.permissions = { contents: "write" };
+  assert.deepEqual(failing(writeNoSecret), ["only comment may write"]);
 
   const noTimeout = safe();
   delete noTimeout.jobs.patterns["timeout-minutes"];
@@ -73,6 +81,23 @@ test("secrets: a secret outside the reviewer step's env, or a reviewer that may 
   const proc = safe();
   proc.jobs["ai-review"].steps[1].run = 'claude -p "/team-review $PR_NUMBER"';
   assert.deepEqual(failing(proc), ["the reviewer step may not read /proc"]);
+
+  // The rule counts only as an argument of the claude call, not as text elsewhere.
+  for (const run of [
+    '# --disallowedTools "Read(//proc/**)"\nclaude -p "/team-review $PR_NUMBER"',
+    'unused=("Read(//proc/**)")\nclaude -p "/team-review $PR_NUMBER"',
+    'claude -p "/team-review $PR_NUMBER" # --disallowedTools "Read(//proc/**)"',
+    'claude -p "/team-review $PR_NUMBER"; echo --disallowedTools "Read(//proc/**)"',
+  ]) {
+    const hidden = safe();
+    hidden.jobs["ai-review"].steps[1].run = run;
+    assert.deepEqual(failing(hidden), ["the reviewer step may not read /proc"], run);
+  }
+
+  const continued = safe();
+  continued.jobs["ai-review"].steps[1].run =
+    'review() {\n  claude -p "/team-review $PR_NUMBER" \\\n    --tools "Read,Grep,Glob" \\\n    --disallowedTools "Read(//proc/**)" "${deny[@]}" \\\n    > "$out"\n}';
+  assert.deepEqual(failing(continued), []);
 });
 
 test("job order: AI review without the deterministic jobs, for forks, or with skipped tests fails", () => {
@@ -83,6 +108,14 @@ test("job order: AI review without the deterministic jobs, for forks, or with sk
   const forks = safe();
   forks.jobs["ai-review"].if = "!github.event.pull_request.draft";
   assert.deepEqual(failing(forks), ["ai-review needs tests and patterns, and skips fork PRs and drafts"]);
+
+  const always = safe();
+  always.jobs["ai-review"].if += " || true";
+  assert.deepEqual(failing(always), ["ai-review needs tests and patterns, and skips fork PRs and drafts"]);
+
+  const wrapped = safe();
+  wrapped.jobs["ai-review"].if = `\${{ ${wrapped.jobs["ai-review"].if} }}`;
+  assert.deepEqual(failing(wrapped), []);
 
   const skipped = safe();
   skipped.jobs.tests.if = "github.event.pull_request.head.repo.full_name == github.repository";

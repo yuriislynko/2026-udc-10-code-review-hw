@@ -145,16 +145,18 @@ fork used for Task E path 1 needs step 1 first.
 
 - `npx --yes yaml valid < pipeline/ai-review.yml` exits 0.
 - [`check-workflow-policy.mjs`](../pipeline/check-workflow-policy.mjs) reads the parsed
-  YAML, and all 13 checks pass:
+  YAML, and all 14 checks pass:
   `npx --yes yaml@2.9.1 --json --single < pipeline/ai-review.yml | node pipeline/check-workflow-policy.mjs`.
   The `patterns` job runs the same check in CI. It checks that:
   - the only trigger is `pull_request`, and top-level `permissions` is empty;
   - every job has its own permissions and a timeout;
-  - no job has both a secret and a write permission;
-  - the secret is used only in the `env` of the reviewer step, and that step denies
-    `Read` on `/proc`;
-  - `tests` and `patterns` run on every PR; `ai-review` needs both and skips forks and
-    drafts;
+  - no job has both a secret and a write permission, and no job other than `comment`
+    has a write permission;
+  - the secret is used only in the `env` of the reviewer step, and the `claude` call in
+    that step passes `Read(//proc/**)` to `--disallowedTools` (the same text in a comment
+    or a variable does not count);
+  - `tests` and `patterns` run on every PR; `ai-review` needs both, and its `if:` is
+    exactly the same-repository, not-draft condition, so an added `|| true` fails;
   - `comment` needs `ai-review`, has `pull-requests: write` only, checks out nothing and
     holds no secret;
   - every action is pinned by SHA, and every checkout sets `persist-credentials: false`;
@@ -274,6 +276,28 @@ fork used for Task E path 1 needs step 1 first.
   After the change: `npx --yes yaml valid` exits 0, the policy check passes 13 of 13,
   and the pipeline script tests (34) pass. The rerun was tested with the stub only, not
   with the real `claude`.
+- The CodeRabbit review of the course PR on 2026-10-18 found three ways for a workflow
+  change to pass the policy check. Each was reproduced on a copy of the parsed workflow
+  and checked again after the fix:
+  - `contents: write` on `tests`, with no secret, passed: the check rejected a write
+    permission only together with a secret, while the threat model says a change that
+    adds a write permission fails. The new check "only comment may write" fails it.
+  - `Read(//proc/**)` removed from the `claude` call and left in a comment passed: the
+    check searched the whole `run:` script for the text. It now joins backslash
+    continuations and looks for the rule as a `--disallowedTools` argument of the
+    `claude` call; a comment, a variable, or text after `;` or `#` does not count. The
+    workflow now writes this rule on the call itself, ahead of the other 18 in `deny`.
+  - `|| true` added to the `if:` of `ai-review` passed: the check matched two parts of
+    the condition. It now compares the whole condition, with a `${{ }}` wrapper and
+    whitespace allowed.
+
+  The new tests fail on the previous version of the check. After the fix: `npx --yes
+  yaml valid` exits 0, the policy check passes 14 of 14, and the pipeline script tests
+  (34) pass. The reviewer step's `run:` script, run with `claude` replaced by a stub,
+  passes the 19 deny rules as 19 arguments, `Read(//proc/**)` first. The same review
+  marked three quotes in the scorecard as not verbatim; each was compared with its
+  review file (`review-runs/pr-2.md:14`, `review-runs/run-2/pr-2.md:11`,
+  `review-runs/run-2/pr-1.md:11`) and is verbatim, so the scorecard did not change.
 - Not checked: a run on GitHub. That leaves untested the merge ref, the fork and draft
   conditions, the artifact handoff, the comment permission, the policy step's `npx`
   install on the runner, and the deny rules for `/proc` and the runner's directory

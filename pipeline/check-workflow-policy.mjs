@@ -16,12 +16,22 @@ const PINNED = /@[0-9a-f]{40}$/;
 const EXPRESSION = /\$\{\{/;
 const SECRET = /\bsecrets\./;
 const APPROVES = /\bgh\s+pr\s+(?:review|merge)\b|--approve\b|\bpulls\/[^/\s]+\/(?:reviews|merge)\b/;
-const SAME_REPO = /github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/;
-const NOT_DRAFT = /!\s*github\.event\.pull_request\.draft\b/;
+// The whole condition, not two parts of it: a match on parts lets `... || true` through.
+const REVIEW_IF = "github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft";
+// The /proc deny rule must be an argument of the claude call itself (backslash
+// continuations joined), not text elsewhere in the script such as a comment or an
+// unused variable. A `;` or `#` before the flag ends the call.
+const PROC_DENY = /^\s*claude\b[^\n;#]*\s--disallowed(?:Tools|-tools)\s+(["'])Read\(\/\/proc\/\*\*\)\1/m;
 
 const json = (value) => JSON.stringify(value ?? null);
 const writes = (permissions) => permissions === "write-all" || Object.values(permissions ?? {}).includes("write");
 const unless = (holds, problem) => (holds ? [] : [problem]);
+/** An `if:` condition without a `${{ }}` wrapper, with whitespace collapsed. */
+const condition = (text) =>
+  String(text ?? "")
+    .replace(/^\s*\$\{\{([\s\S]*)\}\}\s*$/, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 
 /** Every check as { name, problems }; an empty list of problems means the check passes. */
 export function checks(workflow) {
@@ -58,6 +68,10 @@ export function checks(workflow) {
       problems: jobs.filter(([, j]) => SECRET.test(json(j)) && writes(j.permissions)).map(([id]) => id),
     },
     {
+      name: "only comment may write",
+      problems: jobs.filter(([id, j]) => id !== "comment" && writes(j.permissions)).map(([id, j]) => `${id}: ${json(j.permissions)}`),
+    },
+    {
       name: "a secret is used in the env of one ai-review step only",
       problems: [
         ...unless(secretSteps.length <= 1, `${secretSteps.length} steps use a secret`),
@@ -70,7 +84,7 @@ export function checks(workflow) {
     {
       name: "the reviewer step may not read /proc",
       problems: secretSteps
-        .filter((s) => !(s.step.run ?? "").includes("Read(//proc/**)"))
+        .filter((s) => !PROC_DENY.test((s.step.run ?? "").replace(/\\\r?\n/g, " ")))
         .map((s) => `${s.where}: no Read(//proc/**) deny rule`),
     },
     {
@@ -81,7 +95,7 @@ export function checks(workflow) {
       name: "ai-review needs tests and patterns, and skips fork PRs and drafts",
       problems: [
         ...["tests", "patterns"].filter((id) => !needs("ai-review").includes(id)).map((id) => `does not need ${id}`),
-        ...unless(SAME_REPO.test(review?.if ?? "") && NOT_DRAFT.test(review?.if ?? ""), `if: ${review?.if ?? "(none)"}`),
+        ...unless(condition(review?.if) === REVIEW_IF, `if: ${review?.if ?? "(none)"}`),
       ],
     },
     {

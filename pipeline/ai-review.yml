@@ -172,10 +172,12 @@ jobs:
       # holds the environment of every process, the key included; $RUNNER_TEMP and the
       # runner's own directory (~/runners or ~/actions-runner, depending on the runner);
       # and the credential files of the home directory, the list of the local runs
-      # (docs/review-standard.md). The home directory as a whole cannot be denied:
-      # the checkout is inside it. --restricted would confine Read to the checkout, but in
-      # 2.1.301 it does not load the project's /team-review command. The budget caps one
-      # run at about four times the most expensive measured review ($0.26).
+      # (docs/review-standard.md). The /proc rule is written on the claude call itself,
+      # where the policy check of `patterns` looks for it. The home directory as a whole
+      # cannot be denied: the checkout is inside it. --restricted would confine Read to
+      # the checkout, but in 2.1.301 it does not load the project's /team-review command.
+      # The budget caps one run at about four times the most expensive measured review
+      # ($0.26).
       # A review that breaks the format (exit 1 of check-review-format.mjs) is rerun once,
       # in a new session, as the local runs are: Task E measured a format failure in 7 of
       # 36 first attempts (docs/task-e-bonus.md). A review with a line that looks like a
@@ -191,14 +193,14 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/review"
           out="$RUNNER_TEMP/review/pr-$PR_NUMBER.md"
-          deny=("Read(//proc/**)" "Read(//sys/**)" "Read(/$RUNNER_TEMP/**)" "Read(~/runners/**)" "Read(~/actions-runner/**)"
+          deny=("Read(//sys/**)" "Read(/$RUNNER_TEMP/**)" "Read(~/runners/**)" "Read(~/actions-runner/**)"
                 "Read(~/.ssh/**)" "Read(~/.aws/**)" "Read(~/.gnupg/**)" "Read(~/.config/**)" "Read(~/.claude/**)"
                 "Read(~/.docker/**)" "Read(~/.kube/**)" "Read(~/.git-credentials)" "Read(~/.netrc)" "Read(~/.npmrc)"
                 "Read(~/.zsh_history)" "Read(~/.bash_history)" "Read(~/**/.env)" "Read(~/**/.env.*)")
           review() {
             claude -p "/team-review $PR_NUMBER" --model claude-opus-5-5 \
               --tools "Read,Grep,Glob" \
-              --disallowedTools "${deny[@]}" \
+              --disallowedTools "Read(//proc/**)" "${deny[@]}" \
               --strict-mcp-config --setting-sources project \
               --max-budget-usd 1 --no-session-persistence \
               > "$out"
