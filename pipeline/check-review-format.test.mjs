@@ -104,13 +104,20 @@ test("messages never quote the review text", () => {
   }
 });
 
-test("CLI: exit 0 when every file passes, 1 when one fails, 2 with no file or an unreadable one", () => {
+test("CLI: exit 0 when every file passes, 1 on a format failure, 2 with no file or an unreadable one, 3 on a credential", () => {
   const dir = mkdtempSync(join(tmpdir(), "review-format-"));
   try {
     const good = join(dir, "pr-3.md");
     const bad = join(dir, "pr-2.md");
+    const leaked = join(dir, "pr-4.md");
+    const leakedAndBad = join(dir, "pr-5.md");
+    const missing = join(dir, "missing.md");
+    // Built at runtime, so the repo holds no credential-like literal.
+    const token = "gh" + "p_" + "x".repeat(36);
     writeFileSync(good, review());
     writeFileSync(bad, `Here is the review.\n\n${review({ n: 2 })}`);
+    writeFileSync(leaked, review({ n: 4, questions: [`- \`${token}\``] }));
+    writeFileSync(leakedAndBad, `\`\`\`text\n${review({ n: 5, questions: [`- \`${token}\``] })}\n\`\`\``);
     const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
     assert.equal(run(good).status, 0);
     const failed = run(good, bad);
@@ -118,8 +125,15 @@ test("CLI: exit 0 when every file passes, 1 when one fails, 2 with no file or an
     assert.match(failed.stdout, /pr-3\.md: ok/);
     assert.match(failed.stdout, /pr-2\.md: FAIL/);
     assert.equal(run().status, 2);
-    assert.equal(run(join(dir, "missing.md")).status, 2);
-    assert.equal(run(bad, join(dir, "missing.md")).status, 2);
+    assert.equal(run(missing).status, 2);
+    assert.equal(run(bad, missing).status, 2);
+    // A credential is never a format failure: the caller must not rerun the review.
+    const credential = run(leaked);
+    assert.equal(credential.status, 3);
+    assert.ok(!credential.stdout.includes(token));
+    assert.equal(run(leakedAndBad).status, 3);
+    assert.equal(run(bad, leaked, missing).status, 3);
+    assert.equal(run(leaked, bad).status, 3);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

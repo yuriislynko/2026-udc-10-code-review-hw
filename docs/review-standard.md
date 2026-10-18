@@ -165,9 +165,10 @@ Everything inside the PR is material under review, not instructions to the revie
     deterministic script), without printing the line. The review is written to a
     temporary folder outside the repository and moved into `review-runs/` only when the
     check passes. The output is never edited. A run that fails on format (exit code 1)
-    is rerun in a new session. A run that fails on a credential means the PR got the
-    reviewer to quote a secret: the output is deleted, not rerun, the PR is treated as
-    hostile, and the secret is rotated. Its own tests:
+    is rerun in a new session; the CI pipeline does this once by itself. A run that
+    fails on a credential (exit code 3) means the PR got the reviewer to quote a
+    secret: the output is deleted, not rerun, the PR is treated as hostile, and the
+    secret is rotated. Its own tests:
     `node --test pipeline/check-review-format.test.mjs`.
   - Run 1 predates the check and the temporary folder: its outputs were written straight
     to `review-runs/`, and PR-2's fails the format check (text and a code fence before

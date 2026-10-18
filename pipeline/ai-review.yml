@@ -176,6 +176,12 @@ jobs:
       # the checkout is inside it. --restricted would confine Read to the checkout, but in
       # 2.1.301 it does not load the project's /team-review command. The budget caps one
       # run at about four times the most expensive measured review ($0.26).
+      # A review that breaks the format (exit 1 of check-review-format.mjs) is rerun once,
+      # in a new session, as the local runs are: Task E measured a format failure in 6 of
+      # 30 first attempts (docs/task-e-bonus.md). A review with a line that looks like a
+      # credential (exit 3) is never rerun: the step fails and nothing is uploaded or
+      # posted. At most two runs per push, so at most $2. The next step checks the review
+      # that is kept, without the key.
       - name: Run the reviewer
         working-directory: base
         env:
@@ -184,18 +190,30 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           mkdir -p "$RUNNER_TEMP/review"
+          out="$RUNNER_TEMP/review/pr-$PR_NUMBER.md"
           deny=("Read(//proc/**)" "Read(//sys/**)" "Read(/$RUNNER_TEMP/**)" "Read(~/runners/**)" "Read(~/actions-runner/**)"
                 "Read(~/.ssh/**)" "Read(~/.aws/**)" "Read(~/.gnupg/**)" "Read(~/.config/**)" "Read(~/.claude/**)"
                 "Read(~/.docker/**)" "Read(~/.kube/**)" "Read(~/.git-credentials)" "Read(~/.netrc)" "Read(~/.npmrc)"
                 "Read(~/.zsh_history)" "Read(~/.bash_history)" "Read(~/**/.env)" "Read(~/**/.env.*)")
-          claude -p "/team-review $PR_NUMBER" --model claude-opus-5-5 \
-            --tools "Read,Grep,Glob" \
-            --disallowedTools "${deny[@]}" \
-            --strict-mcp-config --setting-sources project \
-            --max-budget-usd 1 --no-session-persistence \
-            > "$RUNNER_TEMP/review/pr-$PR_NUMBER.md"
-      # Format and credential check. On failure nothing is uploaded or posted, and the
-      # log names the problem without quoting the review.
+          review() {
+            claude -p "/team-review $PR_NUMBER" --model claude-opus-5-5 \
+              --tools "Read,Grep,Glob" \
+              --disallowedTools "${deny[@]}" \
+              --strict-mcp-config --setting-sources project \
+              --max-budget-usd 1 --no-session-persistence \
+              > "$out"
+          }
+          review
+          status=0
+          node pipeline/check-review-format.mjs "$out" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "The review breaks the format; running the reviewer once more in a new session."
+            review
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+      # Format and credential check of the review that is kept. On failure nothing is
+      # uploaded or posted, and the log names the problem without quoting the review.
       - name: Check the review
         working-directory: base
         env:

@@ -5,28 +5,43 @@ and with the answer key. Paths 1 and 3 were not done.
 
 ## How the runs were made
 
-- **Reviewer:** the Run 2 configuration, unchanged: `/team-review N`
-  ([`.claude/commands/team-review.md`](../.claude/commands/team-review.md)) with
-  [`docs/review-standard.md`](review-standard.md), Claude Code 2.1.301, `claude-opus-5-5`,
-  2026-10-18. The working tree was clean while the sessions ran, so every session read the
-  committed configuration. The transcripts record the same effort level (`medium`) as the
-  Run 2 sessions.
+- **Reviewer:** the Run 2 command, `/team-review N`
+  ([`.claude/commands/team-review.md`](../.claude/commands/team-review.md)), with
+  [`docs/review-standard.md`](review-standard.md) as committed, Claude Code 2.1.301,
+  `claude-opus-5-5`, 2026-10-18. The working tree was clean while the sessions ran, so every
+  session read the committed configuration. The transcripts record the same effort level
+  (`medium`) as the Run 2 sessions.
+- **Difference from Run 2:** the command text is the one the Run 2 sessions were given; the
+  standard is not. It was edited after Run 2, for Task D, only where it describes the
+  deterministic checks (the CI command, the file types the script reads, the Deterministic
+  column of R13 and R14) and in the R14 rule text, where "local files" became "local files
+  in `app/`". Nothing else in the standard changed (compared from the session transcripts;
+  see the configuration check under Run 2 in [`docs/review-scorecard.md`](review-scorecard.md)).
+  All 18 sessions of this task read the same text.
 - **Sessions:** all six PRs, three sessions per PR: 18 new sessions, each started with the
   command from
   [Where it is encoded in the reviewer](review-standard.md#where-it-is-encoded-in-the-reviewer)
-  plus `--output-format json` for time and tokens, as in Run 2. Session 1 ran the six PRs
-  in parallel, then session 2, then session 3. The JSON `result` field is saved unchanged
-  as [`review-runs/stability/sK/pr-N.md`](../review-runs/stability/).
+  plus `--output-format json` for time and tokens, as in Run 2. Session 1 started the six
+  PRs in parallel, then session 2, then session 3. A review that failed the format check
+  was rerun in a new session after its batch; the session-2 rerun of PR-6 ran together
+  with the session-3 reruns, after session 3 had started (start times in
+  [`review-runs/stability/sessions.md`](../review-runs/stability/sessions.md)). The JSON
+  `result` field is saved unchanged as
+  [`review-runs/stability/sK/pr-N.md`](../review-runs/stability/).
 - **No session saw another's output:** the reviews were kept in a temporary folder outside
   the repository until all 18 had passed the format check, and were copied in afterwards.
   The git status that Claude Code adds to a session was clean in every run, so no session
   saw even the file names of another session's output.
 - **Format check and reruns:** 5 of the 18 first attempts failed
   `pipeline/check-review-format.mjs` and were rerun in a new session, as the standard
-  prescribes (see [Output format](#output-format)). The saved reviews are the reruns.
+  prescribes (see [Output format](#output-format)). The saved reviews are the reruns; the
+  five failed outputs are kept unchanged in
+  [`review-runs/stability/failed/`](../review-runs/stability/failed/) and are not counted.
 - **Isolation check:** the transcripts of all 23 sessions (18 kept, 5 failed on format)
   show reads of `docs/review-standard.md`, the session's own `review-queue/pr-N/` folder
-  and files in `app/` only. No tool call failed and no permission denial was logged.
+  and files in `app/` only. No tool call failed and no permission denial was logged. The
+  files each session read are listed in
+  [`review-runs/stability/sessions.md`](../review-runs/stability/sessions.md#files-read).
 - **Deterministic checks:** the script did not change and its output does not depend on
   the session. The saved `review-runs/pr-N.checks.txt` are the deterministic part of every
   session, so 1-D3 is found by the script in all three.
@@ -79,11 +94,14 @@ Blocking comments that are not in the key, counted by the scorecard's rules:
 | [medium] R9 — «No test that a member gets only their own loans through the new function» | Key | `listLoansPage` has no access check of its own: it calls `listLoans`, which applies the role scope. R9 asks for a denial test for a new function with an access check. The review's own reason is a later rewrite: «If someone later rewrites it to read `db.loans` directly (an obvious move for speed), a member could page through every loan and no test would fail.» A defect that needs a future change is not one the PR brings in. Counted as a false alarm in both counts. |
 
 The R9 comment is not a one-off. Five PR-1 sessions ran for this task: three kept and two
-that failed the format check. Two of the five raised it.
+that failed the format check. Two of the five raised it: the kept session-3 review (B3)
+and its failed first attempt
+([`failed/s3/pr-1.md`](../review-runs/stability/failed/s3/pr-1.md), B4).
 
 ## Totals
 
-Each cell: TP / FN / FP, precision, recall. Run 2 is the single session of Task C.
+Each cell: TP / FN / FP, precision, recall. Run 2 is the single session of Task C, which
+read the standard before the Task D edits (see [How the runs were made](#how-the-runs-were-made)).
 
 Key-strict:
 
@@ -134,11 +152,14 @@ COMMENTS where its rerun approved, and the failed PR-1 output of session 3 holds
 second R9 comment above. With Run 1 (1 of 6) and Run 2 (0 of 6), 6 of 30 first
 attempts failed: 20%.
 
-This matters for the pipeline more than for the counts.
-[`pipeline/ai-review.yml`](../pipeline/ai-review.yml) runs the reviewer once and posts
-nothing when the check fails. At this rate, about one PR in five would get no AI comment
-and a red `ai-review` job. The merge decision does not change, because the AI jobs are not
-required checks. The pipeline was not changed in this task.
+This matters for the pipeline more than for the counts. With one attempt per PR, about
+one PR in five would get no AI comment and a red `ai-review` job. After this measurement,
+[`pipeline/ai-review.yml`](../pipeline/ai-review.yml) reruns a review that fails the
+format check once, in a new session, as the local runs do; a review with a line that
+looks like a credential is not rerun. If the two attempts fail independently at the
+measured rate, about one PR in twenty-five (0.2 × 0.2 = 4%) gets no comment; that figure
+is an estimate, not a measurement. A rerun costs one more review, about $0.22. The merge
+decision does not change, because the AI jobs are not required checks.
 
 ## Cost
 
@@ -150,15 +171,19 @@ required checks. The pipeline was not changed in this task.
 
 One review took 18.7 to 59.2 s and cost $0.168 to $0.264 (list price reported by Claude
 Code). The most expensive, PR-6 in session 1, is close to the $0.255 that the pipeline's
-budget is based on; `--max-budget-usd 1` is still about 3.8 times that. The five reruns
-cost $1.149 more: $4.997 for this task in all.
+budget is based on; `--max-budget-usd 1` is still about 3.8 times that. The five failed
+first attempts cost $1.149 more: $4.997 for this task in all. Per-session figures are in
+[`review-runs/stability/sessions.md`](../review-runs/stability/sessions.md); its times are
+the transcripts' API time, about 1 s lower per six PRs than the JSON values above.
 
 **Conclusion:** on this queue the reviewer's results hold across sessions. Every session
 found all 15 key defects, gave the same verdict on the five PRs with defects, approved
 PR-4 without a blocking finding, and rated every critical and high defect the same. The
-100% recall of Run 2 is therefore not the luck of one session. Precision moves more: one
-session in three added a false alarm (R9 on PR-1). Pooled, precision is 92% key-strict and
-98% adjudicated, a little below the single-session Run 2 figures (94% and 100%). What
+100% recall of Run 2 is therefore not the luck of one session, with one caveat: Run 2 read
+the standard before the Task D edits, which change only the deterministic checks and the
+scope of R14. Precision moves more: one session in three added a false alarm (R9 on PR-1).
+Pooled, precision is 92% key-strict and 98% adjudicated, a little below the single-session
+Run 2 figures (94% and 100%). What
 changes between sessions is a judgment finding at the edge of a rule, the severity or
 rule label of single findings, the minor notes, the questions, the wording, and in about
 one run in five the output format. Three sessions on the same six PRs measure run-to-run

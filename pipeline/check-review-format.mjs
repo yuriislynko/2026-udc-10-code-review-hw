@@ -15,8 +15,10 @@
 // deterministic-checks.mjs) fails the review, so a PR that talks the reviewer into
 // quoting a secret is stopped before the output reaches review-runs/.
 // Messages never quote the review: it is model output shaped by an untrusted PR.
-// Exit code: 0 = every file follows the format, 1 = a file does not, 2 = no file given
-// or a file cannot be read.
+// Exit code: 0 = every file follows the format; 1 = a file breaks the format and holds
+// no credential, so it is rerun in a new session; 2 = no file given or a file cannot be
+// read; 3 = a file has a line that looks like a credential, so it is deleted, not rerun.
+// With several files the highest code wins.
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -30,6 +32,14 @@ const SECTIONS = ["## Blocking findings", "## Minor findings", "## Untrusted con
 const BLOCKING_FINDING = /^### B\d+\. \[(?:critical|high|medium)\] R\d+ — \S/m;
 const MINOR_FINDING = /^### M\d+\. \[low\] R\d+ — \S/m;
 
+/** Returns the 1-based numbers of the lines that match a credential pattern. */
+export function credentialLines(text) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .flatMap((line, i) => (SECRETS.some((re) => re.test(line)) ? [i + 1] : []));
+}
+
 /** Returns the format problems of one review as messages; an empty list means the format holds. */
 export function problems(text, fileName = "") {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
@@ -40,11 +50,9 @@ export function problems(text, fileName = "") {
   const fileNumber = /^pr-(\d+)\.md$/.exec(fileName)?.[1];
   if (title && fileNumber && title[1] !== fileNumber) found.push(`the title names PR-${title[1]}, the file is pr-${fileNumber}.md`);
 
-  lines.forEach((line, i) => {
-    if (SECRETS.some((re) => re.test(line))) {
-      found.push(`line ${i + 1} looks like a credential (not shown); do not save or commit this review`);
-    }
-  });
+  for (const n of credentialLines(text)) {
+    found.push(`line ${n} looks like a credential (not shown); do not save or commit this review`);
+  }
 
   const starts = SECTIONS.map((heading) => lines.indexOf(heading));
   let sectionsHold = true;
@@ -95,12 +103,13 @@ function main(paths) {
       text = readFileSync(path, "utf8");
     } catch (error) {
       console.error(`${path}: cannot read: ${error.message}`);
-      status = 2;
+      status = Math.max(status, 2);
       continue;
     }
     const found = problems(text, basename(path));
     console.log(found.length === 0 ? `${path}: ok` : [`${path}: FAIL`, ...found.map((p) => `  - ${p}`)].join("\n"));
-    if (found.length > 0 && status === 0) status = 1;
+    if (credentialLines(text).length > 0) status = Math.max(status, 3);
+    else if (found.length > 0) status = Math.max(status, 1);
   }
   return status;
 }
